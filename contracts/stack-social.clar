@@ -281,3 +281,122 @@
     )
   )
 )
+
+;; Social connection termination
+(define-public (unfollow-user (following-id uint))
+  (let
+    (
+      (follower-profile-result (map-get? principal-to-profile tx-sender))
+    )
+    (match follower-profile-result
+      follower-id
+      (begin
+        ;; Validate existing connection
+        (asserts! (is-following follower-id following-id) ERR_NOT_FOLLOWING)
+        
+        ;; Remove relationship
+        (map-delete following { follower: follower-id, following: following-id })
+        
+        ;; Update metrics atomically
+        (match (get-profile following-id)
+          following-profile
+          (map-set profiles
+            { profile-id: following-id }
+            (merge following-profile { follower-count: (- (get follower-count following-profile) u1) })
+          )
+          false
+        )
+        
+        (match (get-profile follower-id)
+          follower-profile
+          (map-set profiles
+            { profile-id: follower-id }
+            (merge follower-profile { following-count: (- (get following-count follower-profile) u1) })
+          )
+          false
+        )
+        
+        (ok true)
+      )
+      ERR_PROFILE_NOT_FOUND
+    )
+  )
+)
+
+;; Content publication system
+(define-public (create-post (content (string-utf8 500)))
+  (let
+    (
+      (author-profile-result (map-get? principal-to-profile tx-sender))
+      (post-id (var-get next-post-id))
+      (current-block stacks-block-height)
+    )
+    (match author-profile-result
+      author-id
+      (begin
+        ;; Content creation
+        (map-set posts
+          { post-id: post-id }
+          {
+            author: author-id,
+            content: content,
+            created-at: current-block,
+            boosted-amount: u0,
+            endorsement-count: u0,
+            is-active: true
+          }
+        )
+        
+        ;; Update author statistics
+        (match (get-profile author-id)
+          author-profile
+          (map-set profiles
+            { profile-id: author-id }
+            (merge author-profile { post-count: (+ (get post-count author-profile) u1) })
+          )
+          false
+        )
+        
+        ;; System state progression
+        (var-set next-post-id (+ post-id u1))
+        
+        (ok post-id)
+      )
+      ERR_PROFILE_NOT_FOUND
+    )
+  )
+)
+
+;; Economic content amplification mechanism
+(define-public (boost-post (post-id uint) (amount uint))
+  (let
+    (
+      (current-block stacks-block-height)
+    )
+    ;; Economic and existence validations
+    (asserts! (>= amount MIN_POST_BOOST) ERR_INVALID_AMOUNT)
+    (asserts! (is-some (get-post post-id)) ERR_POST_NOT_FOUND)
+    (asserts! (>= (stx-get-balance tx-sender) amount) ERR_INSUFFICIENT_FUNDS)
+    
+    ;; Economic commitment
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    
+    ;; Boost tracking
+    (map-set post-boosts
+      { post-id: post-id, booster: tx-sender }
+      { amount: amount, boosted-at: current-block }
+    )
+    
+    ;; Content metrics update
+    (match (get-post post-id)
+      post-data
+      (map-set posts
+        { post-id: post-id }
+        (merge post-data { boosted-amount: (+ (get boosted-amount post-data) amount) })
+      )
+      false
+    )
+    
+    (ok true)
+  )
+)
