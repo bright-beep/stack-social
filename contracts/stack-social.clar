@@ -400,3 +400,106 @@
     (ok true)
   )
 )
+
+;; Stake-weighted content endorsement
+(define-public (endorse-post (post-id uint) (stake-amount uint))
+  (let
+    (
+      (endorser-profile-result (map-get? principal-to-profile tx-sender))
+      (current-block stacks-block-height)
+    )
+    ;; Economic and existence validations
+    (asserts! (>= stake-amount MIN_ENDORSEMENT_STAKE) ERR_INVALID_AMOUNT)
+    (asserts! (is-some (get-post post-id)) ERR_POST_NOT_FOUND)
+    
+    (match endorser-profile-result
+      endorser-id
+      (begin
+        ;; Prevent duplicate endorsements
+        (asserts! (is-none (map-get? post-endorsements { post-id: post-id, endorser: endorser-id })) ERR_ALREADY_ENDORSED)
+        (asserts! (>= (stx-get-balance tx-sender) stake-amount) ERR_INSUFFICIENT_FUNDS)
+        
+        ;; Economic commitment
+        (try! (stx-transfer? stake-amount tx-sender (as-contract tx-sender)))
+        
+        ;; Endorsement recording
+        (map-set post-endorsements
+          { post-id: post-id, endorser: endorser-id }
+          { endorsed-at: current-block, stake-amount: stake-amount }
+        )
+        
+        ;; Content metrics update
+        (match (get-post post-id)
+          post-data
+          (map-set posts
+            { post-id: post-id }
+            (merge post-data { endorsement-count: (+ (get endorsement-count post-data) u1) })
+          )
+          false
+        )
+        
+        ;; Author reputation enhancement
+        (match (get-post post-id)
+          post-data
+          (match (get-profile (get author post-data))
+            author-profile
+            (map-set profiles
+              { profile-id: (get author post-data) }
+              (merge author-profile { total-endorsements: (+ (get total-endorsements author-profile) u1) })
+            )
+            false
+          )
+          false
+        )
+        
+        (ok true)
+      )
+      ERR_PROFILE_NOT_FOUND
+    )
+  )
+)
+
+;; Peer-to-peer profile endorsement with messaging
+(define-public (endorse-profile (endorsed-id uint) (stake-amount uint) (message (string-utf8 140)))
+  (let
+    (
+      (endorser-profile-result (map-get? principal-to-profile tx-sender))
+      (current-block stacks-block-height)
+    )
+    ;; Economic and existence validations
+    (asserts! (>= stake-amount MIN_ENDORSEMENT_STAKE) ERR_INVALID_AMOUNT)
+    (asserts! (is-some (get-profile endorsed-id)) ERR_PROFILE_NOT_FOUND)
+    
+    (match endorser-profile-result
+      endorser-id
+      (begin
+        ;; Business logic validations
+        (asserts! (not (is-eq endorser-id endorsed-id)) ERR_UNAUTHORIZED)
+        (asserts! (is-none (map-get? profile-endorsements { endorser: endorser-id, endorsed: endorsed-id })) ERR_ALREADY_ENDORSED)
+        (asserts! (>= (stx-get-balance tx-sender) stake-amount) ERR_INSUFFICIENT_FUNDS)
+        
+        ;; Economic commitment
+        (try! (stx-transfer? stake-amount tx-sender (as-contract tx-sender)))
+        
+        ;; Endorsement with custom message
+        (map-set profile-endorsements
+          { endorser: endorser-id, endorsed: endorsed-id }
+          { endorsed-at: current-block, stake-amount: stake-amount, message: message }
+        )
+        
+        ;; Profile reputation enhancement
+        (match (get-profile endorsed-id)
+          endorsed-profile
+          (map-set profiles
+            { profile-id: endorsed-id }
+            (merge endorsed-profile { total-endorsements: (+ (get total-endorsements endorsed-profile) u1) })
+          )
+          false
+        )
+        
+        (ok true)
+      )
+      ERR_PROFILE_NOT_FOUND
+    )
+  )
+)
