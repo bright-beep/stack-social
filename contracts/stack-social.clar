@@ -178,3 +178,106 @@
     u0
   )
 )
+
+;; CORE PUBLIC FUNCTIONS
+
+;; Profile creation with economic commitment
+(define-public (create-profile 
+  (username (string-ascii 50))
+  (bio (string-utf8 280))
+  (avatar-url (string-ascii 200))
+)
+  (let
+    (
+      (profile-id (var-get next-profile-id))
+      (current-block stacks-block-height)
+    )
+    ;; Validation checks
+    (asserts! (is-none (map-get? principal-to-profile tx-sender)) ERR_PROFILE_EXISTS)
+    (asserts! (is-username-available username) ERR_PROFILE_EXISTS)
+    (asserts! (>= (stx-get-balance tx-sender) MIN_PROFILE_STAKE) ERR_INSUFFICIENT_FUNDS)
+    
+    ;; Economic commitment through staking
+    (try! (stx-transfer? MIN_PROFILE_STAKE tx-sender (as-contract tx-sender)))
+    
+    ;; Profile initialization
+    (map-set profiles
+      { profile-id: profile-id }
+      {
+        owner: tx-sender,
+        username: username,
+        bio: bio,
+        avatar-url: avatar-url,
+        created-at: current-block,
+        staked-amount: MIN_PROFILE_STAKE,
+        reputation-score: MIN_PROFILE_STAKE,
+        follower-count: u0,
+        following-count: u0,
+        post-count: u0,
+        total-endorsements: u0,
+        is-active: true
+      }
+    )
+    
+    ;; Index mappings for efficient lookups
+    (map-set username-to-profile username profile-id)
+    (map-set principal-to-profile tx-sender profile-id)
+    (map-set profile-stakes 
+      { profile-id: profile-id, staker: tx-sender }
+      { amount: MIN_PROFILE_STAKE, staked-at: current-block }
+    )
+    
+    ;; System state update
+    (var-set next-profile-id (+ profile-id u1))
+    
+    (ok profile-id)
+  )
+)
+
+;; Social connection establishment
+(define-public (follow-user (following-id uint))
+  (let
+    (
+      (follower-profile-result (map-get? principal-to-profile tx-sender))
+      (current-block stacks-block-height)
+    )
+    (match follower-profile-result
+      follower-id
+      (begin
+        ;; Validation and business logic checks
+        (asserts! (not (is-eq follower-id following-id)) ERR_SELF_FOLLOW)
+        (asserts! (is-some (get-profile following-id)) ERR_PROFILE_NOT_FOUND)
+        (asserts! (not (is-following follower-id following-id)) ERR_ALREADY_FOLLOWING)
+        
+        ;; Create bidirectional relationship tracking
+        (map-set following
+          { follower: follower-id, following: following-id }
+          { followed-at: current-block, is-active: true }
+        )
+        
+        ;; Update follower metrics
+        (match (get-profile following-id)
+          following-profile
+          (map-set profiles
+            { profile-id: following-id }
+            (merge following-profile { follower-count: (+ (get follower-count following-profile) u1) })
+          )
+          false
+        )
+        
+        ;; Update following metrics
+        (match (get-profile follower-id)
+          follower-profile
+          (map-set profiles
+            { profile-id: follower-id }
+            (merge follower-profile { following-count: (+ (get following-count follower-profile) u1) })
+          )
+          false
+        )
+        
+        (ok true)
+      )
+      ERR_PROFILE_NOT_FOUND
+    )
+  )
+)
